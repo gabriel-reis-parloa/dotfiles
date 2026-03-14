@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Claude: Environment Ready",
+      "type": "shell",
+      "command": "~/.local/bin/claude-ready",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "echo": false,
+        "clear": true
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Claude: Restart Gateway",
+      "type": "shell",
+      "command": "for pid in $(pgrep -f 'mcp-gateway' 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; echo 'Gateway stopped. It will restart automatically when you use Claude.'",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true,
+        "echo": false,
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

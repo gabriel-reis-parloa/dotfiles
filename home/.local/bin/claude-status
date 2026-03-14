@@ -1,0 +1,254 @@
+#!/bin/bash
+# claude-status: live view of running Claude processes
+# Refreshes every 10s. Press Ctrl+C to exit.
+
+ONCE=false
+if [ "$1" = "--once" ]; then
+  ONCE=true
+  INTERVAL=10
+else
+  INTERVAL=${1:-10}
+fi
+
+sessions_dir_for_cwd() {
+  local cwd="$1"
+  local encoded
+  encoded=$(echo "$cwd" | sed 's|/|-|g')
+  echo "$HOME/.claude/projects/${encoded}"
+}
+
+find_session_by_birthtime() {
+  local pid="$1"
+  local proc_start
+  proc_start=$(stat -c %Y /proc/"$pid" 2>/dev/null) || return
+  local cwd
+  cwd=$(readlink /proc/"$pid"/cwd 2>/dev/null) || return
+  local sdir
+  sdir=$(sessions_dir_for_cwd "$cwd")
+  [ -d "$sdir" ] || return
+  python3 - "$sdir" "$proc_start" <<'PYEOF' 2>/dev/null
+import os, sys, subprocess
+sdir = sys.argv[1]
+proc_start = int(sys.argv[2])
+candidates = []
+for fname in os.listdir(sdir):
+    if not fname.endswith('.jsonl'):
+        continue
+    fpath = os.path.join(sdir, fname)
+    try:
+        st = os.stat(fpath)
+        result = subprocess.run(['stat', '-c', '%W', fpath], capture_output=True, text=True)
+        birth = int(result.stdout.strip()) if result.returncode == 0 else int(st.st_mtime)
+        delta = birth - proc_start
+        if 0 <= delta <= 600:
+            candidates.append((int(st.st_mtime), fname[:-6]))
+    except Exception:
+        continue
+if candidates:
+    candidates.sort(reverse=True)
+    print(candidates[0][1])
+PYEOF
+}
+
+session_label() {
+  local pid="$1"
+  local session_id="$2"
+  local sdir="$3"
+  local entrypoint
+  entrypoint=$(cat /proc/"$pid"/environ 2>/dev/null | tr '\0' '\n' \
+    | grep '^CLAUDE_CODE_ENTRYPOINT=' | cut -d= -f2)
+  local source
+  if [ "$entrypoint" = "claude-vscode" ]; then
+    source="VSCode: "
+  else
+    source="Terminal: "
+  fi
+  if [ -z "$session_id" ]; then
+    echo "Starting up"
+    return
+  fi
+  local path="${sdir}/${session_id}.jsonl"
+  [ -f "$path" ] || { echo "${source}(unknown)"; return; }
+  python3 - "$path" "$source" <<'PYEOF' 2>/dev/null
+import json, sys
+IDE_PREFIXES = ('<ide_', '<local-command-', '<system-reminder', '<function_calls>')
+path, source = sys.argv[1], sys.argv[2]
+has_user_msg = False
+only_snapshots = True
+with open(path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        t = d.get('type', '')
+        if t != 'file-history-snapshot':
+            only_snapshots = False
+        if t != 'user':
+            continue
+        has_user_msg = True
+        content = d.get('message', {}).get('content', '')
+        texts = []
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get('type') == 'text':
+                    texts.append(c['text'])
+        elif isinstance(content, str):
+            texts = [content]
+        for text in texts:
+            t = text.strip()
+            if not t or any(t.startswith(p) for p in IDE_PREFIXES):
+                continue
+            t = t.replace('\n', ' ')
+            max_name = 42 - len(source) - 1
+            print(f"{source}{t[:max_name]}")
+            sys.exit(0)
+if only_snapshots:
+    print(f"{source}Editor background")
+elif not has_user_msg:
+    print(f"{source}(no message yet)")
+else:
+    print(f"{source}(unknown)")
+PYEOF
+}
+
+render() {
+  local now
+  now=$(date '+%H:%M:%S')
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Claude Process Status — ${now}  (refresh: ${INTERVAL}s)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  local HOOK="$HOME/.claude/plugins/cache/claudes-kitchen/gateway/17218ff20959/hooks/gateway-session-start.sh"
+  gateway_healthy() { (echo > /dev/tcp/127.0.0.1/3100) 2>/dev/null; }
+  restart_gateway() {
+    if pgrep -f "gateway-session-start.sh" >/dev/null 2>&1; then
+      return
+    fi
+    local stale_pid
+    stale_pid=$(pgrep -f "mcp-gateway" | head -1)
+    [ -n "$stale_pid" ] && kill "$stale_pid" 2>/dev/null
+    bash "$HOOK" >/dev/null 2>&1 &
+  }
+
+  echo ""
+  echo "  GATEWAY"
+  if gateway_healthy; then
+    local gw_pid gw_mem
+    gw_pid=$(pgrep -f "mcp-gateway" | head -1)
+    gw_mem=$(ps -o rss= -p "$gw_pid" 2>/dev/null | awk '{printf "%.0fMB", $1/1024}')
+    echo "  ✓ running  PID=$gw_pid  mem=${gw_mem}  port=3100"
+  else
+    if pgrep -f "mcp-gateway" >/dev/null 2>&1; then
+      echo "  ✗ process alive but not responding — restarting..."
+      restart_gateway
+    else
+      echo "  ✗ not running — restarting..."
+      restart_gateway
+    fi
+  fi
+
+  echo ""
+  echo "  TOKENS"
+  local TOKENS_DIR="$HOME/.cache/mcp-gateway/tokens"
+  for token_file in "$TOKENS_DIR"/*.json; do
+    [ -f "$token_file" ] || continue
+    backend=$(basename "$token_file" .json)
+    python3 - "$token_file" "$backend" <<'PYEOF' 2>/dev/null
+import sys, json, os
+from datetime import datetime, timezone
+file, name = sys.argv[1], sys.argv[2]
+if not os.path.exists(file):
+    print(f"  ✗ {name:<18}  no token")
+    sys.exit(0)
+try:
+    d = json.load(open(file))
+    expires_str = d.get("expires_at", "")
+    has_refresh = bool(d.get("refresh_token"))
+    if not expires_str:
+        print(f"  ? {name:<18}  unknown expiry")
+        sys.exit(0)
+    exp = datetime.fromisoformat(expires_str)
+    secs = (exp - datetime.now(timezone.utc)).total_seconds()
+    if secs < 0:
+        note = "(auto-refresh on use)" if has_refresh else "⚠ MANUAL RE-AUTH NEEDED"
+        print(f"  ✓ {name:<18}  ready  {note}")
+    elif secs < 3600:
+        print(f"  ✓ {name:<18}  ok  ({int(secs) // 60}m remaining)")
+    else:
+        h, m = int(secs) // 3600, (int(secs) % 3600) // 60
+        print(f"  ✓ {name:<18}  ok  ({h}h {m}m remaining)")
+except Exception as e:
+    print(f"  ? {name:<18}  error: {e}")
+PYEOF
+  done
+
+  echo ""
+  printf "  %-6s  %-10s  %-42s  %-8s  %s\n" "PID" "SESSION" "CONVERSATION" "MEM" "STATE"
+  printf "  %-6s  %-10s  %-42s  %-8s  %s\n" "------" "----------" "------------------------------------------" "--------" "------"
+
+  local found=0
+  while IFS= read -r line; do
+    local pid cmd session_id session name mem state children sdir cwd
+    pid=$(echo "$line" | awk '{print $1}')
+    cmd=$(echo "$line" | cut -d' ' -f2-)
+    local exe
+    exe=$(readlink /proc/"$pid"/exe 2>/dev/null || true)
+    echo "$cmd $exe" | grep -qE "native-binary/claude|share/claude/versions" || continue
+    mem=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{printf "%.0fMB", $1/1024}')
+    cwd=$(readlink /proc/"$pid"/cwd 2>/dev/null)
+    sdir=$(sessions_dir_for_cwd "${cwd:-$HOME/projects/parloa}")
+    if echo "$cmd" | grep -q "\-\-resume"; then
+      session_id=$(echo "$cmd" | grep -o '\-\-resume [^ ]*' | awk '{print $2}')
+      if [ -z "$session_id" ] && [ -d "$sdir" ]; then
+        session_id=$(ls -t "$sdir"/*.jsonl 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/\.jsonl$//')
+      fi
+    else
+      session_id=$(find_session_by_birthtime "$pid")
+    fi
+    if [ -n "$session_id" ]; then
+      session="${session_id:0:8}+"
+    else
+      session="(none)    "
+    fi
+    name=$(session_label "$pid" "$session_id" "$sdir")
+    children=$(pgrep -P "$pid" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$children" -gt 0 ]; then
+      state="● active (${children} child)"
+    else
+      state="○ idle"
+    fi
+    printf "  %-6s  %-10s  %-42s  %-8s  %s\n" "$pid" "$session" "$name" "$mem" "$state"
+    found=$((found + 1))
+  done < <(pgrep -a -f "claude" 2>/dev/null)
+
+  [ "$found" -eq 0 ] && echo "  (none)"
+
+  local hooks
+  hooks=$(pgrep -a -f "gateway-session-start" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$hooks" -gt 0 ]; then
+    echo ""
+    printf "  ⚠  %s gateway-session-start.sh process(es) stuck\n" "$hooks"
+  fi
+
+  echo ""
+  echo "  MEMORY (WSL)"
+  free -h | awk 'NR==2 {printf "  total=%-6s  used=%-6s  free=%-6s  available=%s\n", $2, $3, $4, $7}'
+  echo ""
+  echo "  Ctrl+C to exit"
+}
+
+if $ONCE; then
+  render
+else
+  tput civis
+  trap 'tput cnorm; echo' EXIT
+  while true; do
+    printf '\033[2J\033[H'
+    render
+    sleep "$INTERVAL"
+  done
+fi

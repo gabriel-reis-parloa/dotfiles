@@ -1,0 +1,79 @@
+#!/bin/bash
+# Shows MCP gateway service state and per-backend token health.
+# Usage: kitchen-gateway-status [--json]
+# Note: uses lsof for gateway detection (legacy — unreliable in WSL2).
+# For reliable health checks use claude-status instead.
+
+TOKENS_DIR="$HOME/.cache/mcp-gateway/tokens"
+GATEWAY_PORT=3100
+JSON_MODE=false
+[ "$1" = "--json" ] && JSON_MODE=true
+
+gateway_running=false
+if lsof -i ":$GATEWAY_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    gateway_running=true
+fi
+
+if ! $JSON_MODE; then
+    if $gateway_running; then
+        echo "Gateway  RUNNING  (port $GATEWAY_PORT)"
+    else
+        echo "Gateway  STOPPED"
+    fi
+    echo ""
+    echo "Backend tokens:"
+fi
+
+check_token() {
+    local name="$1"
+    local file="$TOKENS_DIR/${name}.json"
+    python3 - "$file" "$name" <<'PYEOF'
+import sys, json, os
+from datetime import datetime, timezone
+file, name = sys.argv[1], sys.argv[2]
+if not os.path.exists(file):
+    print(f"  {name:<12}  NO TOKEN")
+    sys.exit(0)
+try:
+    with open(file) as f:
+        d = json.load(f)
+    expires_str = d.get("expires_at", "")
+    has_refresh = bool(d.get("refresh_token"))
+    refresh_note = "" if has_refresh else "  [NO REFRESH TOKEN — manual re-auth needed]"
+    if not expires_str:
+        print(f"  {name:<12}  UNKNOWN expiry{refresh_note}")
+        sys.exit(0)
+    exp = datetime.fromisoformat(expires_str)
+    now = datetime.now(timezone.utc)
+    secs = (exp - now).total_seconds()
+    if secs < 0:
+        mins = int(abs(secs)) // 60
+        if has_refresh:
+            status = f"EXPIRED {mins}m ago  (gateway will refresh on next use)"
+        else:
+            status = f"EXPIRED {mins}m ago  [re-auth needed]"
+    elif secs < 300:
+        status = f"EXPIRING in {int(secs)}s{refresh_note}"
+    elif secs < 3600:
+        status = f"OK  ({int(secs) // 60}m remaining)"
+    else:
+        h, m = int(secs) // 3600, (int(secs) % 3600) // 60
+        status = f"OK  ({h}h {m}m remaining)"
+    print(f"  {name:<12}  {status}")
+except Exception as e:
+    print(f"  {name:<12}  ERROR: {e}")
+PYEOF
+}
+
+for backend in jira notion datadog miro; do
+    check_token "$backend"
+done
+
+if ! $JSON_MODE; then
+    echo ""
+    if $gateway_running; then
+        echo "To re-auth a backend: restart the gateway and open the auth URL in VS Code."
+    else
+        echo "Start the gateway by opening a new Claude Code session."
+    fi
+fi

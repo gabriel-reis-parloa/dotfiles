@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# switch-context: Switch between work contexts (parloa / personal)
+# Usage: switch-context [parloa|personal|status]
+
+CONTEXT_DIR="$HOME/.context"
+CLAUDE_DIR="$HOME/.claude"
+LOG_FILE="$CONTEXT_DIR/switch.log"
+VSCODE_PROFILE_PARLOA="Parloa"
+VSCODE_PROFILE_PERSONAL="Default"
+PROJECT_PARLOA="$HOME/projects/parloa"
+PROJECT_PERSONAL="$HOME/projects/personal"
+
+current_context() {
+  cat "$CONTEXT_DIR/active" 2>/dev/null || echo "unknown"
+}
+
+print_status() {
+  local ctx
+  ctx=$(current_context)
+  echo "Active context: $ctx"
+  echo "Claude key: $(jq -r '.primaryApiKey' "$CLAUDE_DIR/config.json" 2>/dev/null | sed 's/.\{20\}$/.../')"
+  echo "JIRA_EMAIL: ${JIRA_EMAIL:-<not set>}"
+}
+
+switch_to() {
+  local target="$1"
+  if [[ "$target" != "parloa" && "$target" != "personal" ]]; then
+    echo "Error: unknown context '$target'. Use 'parloa' or 'personal'." >&2
+    exit 1
+  fi
+  local current
+  current=$(current_context)
+  if [[ "$current" == "$target" ]]; then
+    echo "Already in '$target' context."
+    print_status
+    exit 0
+  fi
+  exec > >(tee "$LOG_FILE") 2>&1
+  echo "=== switch-context: $(date '+%Y-%m-%d %H:%M:%S') ==="
+  echo "Switching to: $target"
+
+  # 1. Stop gateway BEFORE swapping credentials (prevents race condition)
+  local gateway_state="$HOME/.cache/mcp-gateway"
+  local killed=0
+  for pid_file in "$gateway_state"/*.pid; do
+    [[ -f "$pid_file" ]] || continue
+    local pid
+    pid=$(cat "$pid_file")
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      (( killed++ )) || true
+    fi
+    rm -f "$pid_file"
+  done
+  local extra=0
+  for pid in $(pgrep -f "mcp-gateway" 2>/dev/null); do
+    kill "$pid" 2>/dev/null || true
+    (( extra++ )) || true
+  done
+  (( extra > 0 )) && echo "  [ok] Killed $extra untracked gateway process(es)"
+  if (( killed > 0 || extra > 0 )); then
+    for _i in $(seq 1 20); do
+      ! (echo > /dev/tcp/127.0.0.1/3100) 2>/dev/null && break
+      sleep 0.5
+    done
+    echo "  [ok] Gateway stopped ($killed tracked + $extra untracked)"
+  else
+    echo "  [skip] Gateway was not running"
+  fi
+
+  # 2-5. Swap credentials, settings, env, active marker
+  cp "$CONTEXT_DIR/$target/claude-config.json" "$CLAUDE_DIR/config.json"
+  echo "  [ok] Claude credentials"
+  cp "$CONTEXT_DIR/$target/claude-settings.json" "$CLAUDE_DIR/settings.json"
+  echo "  [ok] Claude settings"
+  # shellcheck disable=SC1090
+  source "$CONTEXT_DIR/$target/env.sh" || true
+  echo "  [ok] Environment variables sourced (current session only)"
+  echo "$target" > "$CONTEXT_DIR/active"
+  echo "  [ok] Active context set to '$target'"
+
+  # 6. Open VS Code
+  if command -v code &>/dev/null; then
+    local vscode_profile project_dir
+    if [[ "$target" == "parloa" ]]; then
+      vscode_profile="$VSCODE_PROFILE_PARLOA"
+      project_dir="$PROJECT_PARLOA"
+    else
+      vscode_profile="$VSCODE_PROFILE_PERSONAL"
+      project_dir="$PROJECT_PERSONAL"
+    fi
+    if [[ -d "$project_dir" ]]; then
+      code --profile "$vscode_profile" --reuse-window "$project_dir"
+      echo "  [ok] VS Code opened: profile='$vscode_profile', folder='$project_dir'"
+    else
+      echo "  [warn] Project dir not found: $project_dir"
+    fi
+  fi
+
+  echo ""
+  echo "Done. Context is now: $target"
+  print_status
+  echo ""
+  echo "  *** ACTION REQUIRED ***"
+  echo "  In VS Code: Ctrl+Shift+P → 'Developer: Reload Window'"
+  echo ""
+  echo "Log saved to: $LOG_FILE"
+}
+
+case "${1:-}" in
+  parloa|personal) switch_to "$1" ;;
+  status|"") print_status ;;
+  *) echo "Usage: switch-context [parloa|personal|status]"; exit 1 ;;
+esac

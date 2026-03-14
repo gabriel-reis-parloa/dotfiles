@@ -1,0 +1,10 @@
+# Never commit credentials or tokens
+home/.context/parloa/
+home/.context/personal/
+home/.context/active
+home/.context/*.log
+home/.cache/
+
+# OS
+.DS_Store
+*.swp

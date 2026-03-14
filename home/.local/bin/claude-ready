@@ -1,0 +1,144 @@
+#!/bin/bash
+# claude-ready: Startup readiness check for the Claude environment.
+# Polls until gateway + Claude extension are up, then shows final status and exits.
+# Designed to run as a VS Code folderOpen task.
+
+GATEWAY_PORT=3100
+TOKENS_DIR="$HOME/.cache/mcp-gateway/tokens"
+POLL_INTERVAL=2
+TIMEOUT=120
+
+gateway_healthy() { (echo > /dev/tcp/127.0.0.1/3100) 2>/dev/null; }
+
+claude_running() {
+  local exe
+  for pid in $(pgrep -f "claude" 2>/dev/null); do
+    exe=$(readlink /proc/"$pid"/exe 2>/dev/null || true)
+    echo "$exe" | grep -qE "native-binary/claude|share/claude/versions" && return 0
+  done
+  return 1
+}
+
+token_status() {
+  local name="$1"
+  local file="$TOKENS_DIR/${name}.json"
+  python3 - "$file" "$name" <<'PYEOF' 2>/dev/null
+import sys, json, os
+from datetime import datetime, timezone
+file, name = sys.argv[1], sys.argv[2]
+if not os.path.exists(file):
+    print(f"  {name:<18}  no token yet")
+    sys.exit(0)
+try:
+    with open(file) as f:
+        d = json.load(f)
+    expires_str = d.get("expires_at", "")
+    has_refresh = bool(d.get("refresh_token"))
+    if not expires_str:
+        print(f"  {name:<18}  unknown expiry")
+        sys.exit(0)
+    exp = datetime.fromisoformat(expires_str)
+    now = datetime.now(timezone.utc)
+    secs = (exp - now).total_seconds()
+    if secs < 0:
+        note = "(auto-refresh on use)" if has_refresh else "[MANUAL RE-AUTH NEEDED]"
+        print(f"  {name:<18}  ready  {note}")
+    elif secs < 3600:
+        print(f"  {name:<18}  ok  ({int(secs) // 60}m remaining)")
+    else:
+        h, m = int(secs) // 3600, (int(secs) % 3600) // 60
+        print(f"  {name:<18}  ok  ({h}h {m}m remaining)")
+except Exception as e:
+    print(f"  {name:<18}  error: {e}")
+PYEOF
+}
+
+tokens_need_manual_reauth() {
+  for file in "$TOKENS_DIR"/*.json; do
+    [ -f "$file" ] || continue
+    python3 - "$file" <<'PYEOF' 2>/dev/null
+import sys, json
+from datetime import datetime, timezone
+d = json.load(open(sys.argv[1]))
+has_refresh = bool(d.get("refresh_token"))
+exp_str = d.get("expires_at", "")
+if not exp_str: sys.exit(0)
+exp = datetime.fromisoformat(exp_str)
+secs = (exp - datetime.now(timezone.utc)).total_seconds()
+sys.exit(1 if secs < 0 and not has_refresh else 0)
+PYEOF
+    [ $? -eq 1 ] && return 0
+  done
+  return 1
+}
+
+render_waiting() {
+  local elapsed="$1"
+  printf '\033[2J\033[H'
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Parloa's Claude Environment — Starting up...  (${elapsed}s)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  if gateway_healthy; then
+    echo "  ✓ Kitchen's Gateway  ready"
+  else
+    echo "  … Kitchen's Gateway  starting"
+  fi
+  if claude_running; then
+    echo "  ✓ Claude             running"
+  else
+    echo "  … Claude             loading"
+  fi
+  echo ""
+  echo "  Waiting for all components..."
+}
+
+render_ready() {
+  local elapsed="$1"
+  local gw_pid gw_mem
+  gw_pid=$(pgrep -f "mcp-gateway" | head -1)
+  gw_mem=$(ps -o rss= -p "$gw_pid" 2>/dev/null | awk '{printf "%.0fMB", $1/1024}')
+  printf '\033[2J\033[H'
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Parloa's Claude Environment — READY  (${elapsed}s to start)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "  ✓ Kitchen's Gateway  PID=$gw_pid  mem=${gw_mem}  port=$GATEWAY_PORT"
+  echo "  ✓ Claude             running"
+  echo ""
+  echo "  Backend tokens:"
+  for token_file in "$TOKENS_DIR"/*.json; do
+    [ -f "$token_file" ] || continue
+    token_status "$(basename "$token_file" .json)"
+  done
+  if tokens_need_manual_reauth; then
+    echo ""
+    echo "  ! One or more backends need manual re-auth."
+    echo "    Run: Gateway: Re-auth  (Ctrl+Shift+P → Run Task)"
+  fi
+  echo ""
+  echo "  Ready at $(date '+%H:%M:%S')"
+}
+
+START=$SECONDS
+while true; do
+  elapsed=$(( SECONDS - START ))
+  if gateway_healthy && claude_running; then
+    render_ready "$elapsed"
+    exit 0
+  fi
+  if [ "$elapsed" -ge "$TIMEOUT" ]; then
+    printf '\033[2J\033[H'
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Parloa's Claude Environment — TIMEOUT after ${TIMEOUT}s"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    gateway_healthy && echo "  ✓ Gateway  ready" || echo "  ✗ Gateway  not responding"
+    claude_running  && echo "  ✓ Claude   running" || echo "  ✗ Claude   not found"
+    echo ""
+    echo "  Check claude-status for details."
+    exit 1
+  fi
+  render_waiting "$elapsed"
+  sleep "$POLL_INTERVAL"
+done
