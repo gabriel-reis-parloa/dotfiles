@@ -1,8 +1,10 @@
 # claude-code-setup
 
-WSL2 environment setup for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with the Claude's Kitchen MCP gateway at Parloa.
+> **Personal setup by Gabriel Reis (Staff PM, Parloa) — not an official Parloa standard.**
+> Shared publicly in case it's useful to others running Claude Code on WSL2 with an MCP gateway.
+> Nothing here represents Parloa engineering guidance or tooling decisions.
 
-This repository contains the shell scripts, hooks, and VS Code configuration that make Claude Code production-ready in a WSL2 + VS Code Remote WSL environment — with automatic gateway management, context switching between work accounts, OAuth token refresh, and a startup readiness check.
+WSL2 environment for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with the Claude's Kitchen MCP gateway. Handles the failure modes that make this painful on WSL2: unreliable port detection, 1Password being unavailable, OAuth callback routing, context switching races, and token refresh timing.
 
 ---
 
@@ -71,7 +73,7 @@ WSL2 Ubuntu
 ## What's in this repo
 
 ```
-clause-code-setup/
+claude-code-setup/
   README.md
   install.sh                              # symlink installer
   .gitignore
