@@ -12,6 +12,35 @@ fi
 while IFS= read -r HOOK_FILE; do
   CHANGED=false
 
+  # Patch: fast-path on gateway up, ignoring local backends (slack/gong/salesforce
+  # are never available in WSL — NEED_START is always non-empty, blocking fast-path).
+  if ! grep -q 'Local backends.*never available\|NEED_START.*never' "$HOOK_FILE" && grep -q 'NEED_START\[@\]' "$HOOK_FILE"; then
+    python3 - "$HOOK_FILE" <<'PYEOF'
+import sys
+path = sys.argv[1]
+content = open(path).read()
+old = (
+    '# Fast path: everything is already running\n'
+    'if $GATEWAY_UP && [ ${#NEED_START[@]} -eq 0 ]; then\n'
+    '  echo "$(_elapsed) Gateway already running — fast path exit" >&2\n'
+    '  exit 0\n'
+    'fi'
+)
+new = (
+    '# Fast path: gateway is up — skip credential resolution entirely.\n'
+    '# Local backends (slack/gong/salesforce) are never available in WSL;\n'
+    '# checking NEED_START would always fail and fall through to op item get hangs.\n'
+    'if $GATEWAY_UP; then\n'
+    '  echo "$(_elapsed) Gateway already running — fast path exit" >&2\n'
+    '  exit 0\n'
+    'fi'
+)
+if old in content:
+    open(path, 'w').write(content.replace(old, new, 1))
+PYEOF
+    CHANGED=true
+  fi
+
   # Patch op item get calls — use -k 5 to SIGKILL if SIGTERM is ignored (WSL)
   if ! grep -q 'timeout -k' "$HOOK_FILE" && grep -q 'op item get' "$HOOK_FILE"; then
     sed -i 's/"\$(timeout 15 op item get /"\$(timeout -k 5 15 op item get /g' "$HOOK_FILE"
