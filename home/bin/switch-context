@@ -70,7 +70,32 @@ switch_to() {
 
   # 2-5. Swap credentials, settings, env, active marker
   cp "$CONTEXT_DIR/$target/claude-config.json" "$CLAUDE_DIR/config.json"
-  echo "  [ok] Claude credentials"
+  echo "  [ok] Claude credentials (API key)"
+
+  # Only restore OAuth session if the file actually contains claudeAiOauth data
+  # (not just MCP gateway tokens — those are context-specific and not needed here)
+  if python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CONTEXT_DIR/$target/claude-credentials.json'))
+    sys.exit(0 if 'claudeAiOauth' in d else 1)
+except: sys.exit(1)
+" 2>/dev/null; then
+    cp "$CONTEXT_DIR/$target/claude-credentials.json" "$CLAUDE_DIR/.credentials.json"
+    echo "  [ok] Claude credentials (OAuth session)"
+  else
+    rm -f "$CLAUDE_DIR/.credentials.json"
+    echo "  [ok] Claude credentials (API key only — OAuth session cleared)"
+    # Guard: if VS Code or gateway writes an mcpOAuth-only credentials file right after
+    # the switch, it breaks API key auth. Watch for 3 seconds and clean it up if it appears.
+    ( sleep 3
+      if [[ -f "$CLAUDE_DIR/.credentials.json" ]] && \
+         ! python3 -c "import json,sys; d=json.load(open('$CLAUDE_DIR/.credentials.json')); sys.exit(0 if 'claudeAiOauth' in d else 1)" 2>/dev/null; then
+        rm -f "$CLAUDE_DIR/.credentials.json"
+      fi
+    ) &
+  fi
+
   cp "$CONTEXT_DIR/$target/claude-settings.json" "$CLAUDE_DIR/settings.json"
   echo "  [ok] Claude settings"
   # shellcheck disable=SC1090
@@ -90,8 +115,13 @@ switch_to() {
       project_dir="$PROJECT_PERSONAL"
     fi
     if [[ -d "$project_dir" ]]; then
-      code --profile "$vscode_profile" --reuse-window "$project_dir"
-      echo "  [ok] VS Code opened: profile='$vscode_profile', folder='$project_dir'"
+      # Use Windows code.exe with remote URI — avoids stale IPC socket after hibernation
+      # and correctly maps to VS Code's stored workspace state (open files, history, etc.)
+      local distro folder_uri
+      distro=$(wslpath -w / | grep -oP '(?<=\\\\wsl.localhost\\\\)[^\\]+' || echo "Ubuntu-24.04")
+      folder_uri="vscode-remote://wsl+${distro}${project_dir}"
+      "/mnt/c/Users/Gabriel/AppData/Local/Programs/Microsoft VS Code/code.exe" --new-window --profile "$vscode_profile" --folder-uri "$folder_uri" &
+      echo "  [ok] VS Code opened: folder='$project_dir' profile='$vscode_profile'"
     else
       echo "  [warn] Project dir not found: $project_dir"
     fi
@@ -100,9 +130,6 @@ switch_to() {
   echo ""
   echo "Done. Context is now: $target"
   print_status
-  echo ""
-  echo "  *** ACTION REQUIRED ***"
-  echo "  In VS Code: Ctrl+Shift+P → 'Developer: Reload Window'"
   echo ""
   echo "Log saved to: $LOG_FILE"
 }

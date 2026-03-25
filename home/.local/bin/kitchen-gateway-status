@@ -37,13 +37,17 @@ if not os.path.exists(file):
 try:
     with open(file) as f:
         d = json.load(f)
-    expires_str = d.get("expires_at", "")
+    expires_raw = d.get("expires_at", "")
     has_refresh = bool(d.get("refresh_token"))
     refresh_note = "" if has_refresh else "  [NO REFRESH TOKEN — manual re-auth needed]"
-    if not expires_str:
+    if not expires_raw:
         print(f"  {name:<12}  UNKNOWN expiry{refresh_note}")
         sys.exit(0)
-    exp = datetime.fromisoformat(expires_str)
+    # Handle both integer (unix timestamp) and ISO string formats
+    if isinstance(expires_raw, (int, float)):
+        exp = datetime.fromtimestamp(expires_raw, tz=timezone.utc)
+    else:
+        exp = datetime.fromisoformat(expires_raw)
     now = datetime.now(timezone.utc)
     secs = (exp - now).total_seconds()
     if secs < 0:

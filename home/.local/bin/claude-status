@@ -135,18 +135,17 @@ render() {
   }
 
   echo ""
-  echo "  GATEWAY"
   if gateway_healthy; then
     local gw_pid gw_mem
     gw_pid=$(pgrep -f "mcp-gateway" | head -1)
     gw_mem=$(ps -o rss= -p "$gw_pid" 2>/dev/null | awk '{printf "%.0fMB", $1/1024}')
-    echo "  ✓ running  PID=$gw_pid  mem=${gw_mem}  port=3100"
+    echo "  GATEWAY  ✓ running  PID=$gw_pid  mem=${gw_mem}  port=3100"
   else
     if pgrep -f "mcp-gateway" >/dev/null 2>&1; then
-      echo "  ✗ process alive but not responding — restarting..."
+      echo "  GATEWAY  ✗ process alive but not responding — restarting..."
       restart_gateway
     else
-      echo "  ✗ not running — restarting..."
+      echo "  GATEWAY  ✗ not running — restarting..."
       restart_gateway
     fi
   fi
@@ -166,12 +165,15 @@ if not os.path.exists(file):
     sys.exit(0)
 try:
     d = json.load(open(file))
-    expires_str = d.get("expires_at", "")
+    expires_raw = d.get("expires_at", "")
     has_refresh = bool(d.get("refresh_token"))
-    if not expires_str:
+    if not expires_raw:
         print(f"  ? {name:<18}  unknown expiry")
         sys.exit(0)
-    exp = datetime.fromisoformat(expires_str)
+    if isinstance(expires_raw, (int, float)):
+        exp = datetime.fromtimestamp(expires_raw, tz=timezone.utc)
+    else:
+        exp = datetime.fromisoformat(expires_raw)
     secs = (exp - datetime.now(timezone.utc)).total_seconds()
     if secs < 0:
         note = "(auto-refresh on use)" if has_refresh else "⚠ MANUAL RE-AUTH NEEDED"
@@ -235,9 +237,6 @@ PYEOF
   fi
 
   echo ""
-  echo "  MEMORY (WSL)"
-  free -h | awk 'NR==2 {printf "  total=%-6s  used=%-6s  free=%-6s  available=%s\n", $2, $3, $4, $7}'
-  echo ""
   echo "  Ctrl+C to exit"
 }
 
@@ -247,8 +246,9 @@ else
   tput civis
   trap 'tput cnorm; echo' EXIT
   while true; do
+    output=$(render)
     printf '\033[2J\033[H'
-    render
+    printf '%s' "$output"
     sleep "$INTERVAL"
   done
 fi

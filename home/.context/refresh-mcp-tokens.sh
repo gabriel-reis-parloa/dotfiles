@@ -41,7 +41,10 @@ for fname in os.listdir(token_dir):
     if not expires_at or not refresh_token:
         continue
     try:
-        exp = datetime.datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        if isinstance(expires_at, (int, float)):
+            exp = datetime.datetime.fromtimestamp(expires_at, tz=datetime.timezone.utc)
+        else:
+            exp = datetime.datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
     except Exception:
         continue
     if (exp - now).total_seconds() > threshold:
