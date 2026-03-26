@@ -1,0 +1,43 @@
+#!/bin/bash
+# Prevents Windows from sleeping while Claude processes are running.
+# Usage: caffeine         — start (idempotent)
+#        caffeine --stop  — stop running instance
+#
+# Mechanism: simulates F15 keypress every 60s via PowerShell (invisible key,
+# keeps Windows awake without affecting any application).
+
+PIDFILE="$HOME/.cache/caffeine.pid"
+
+stop_caffeine() {
+  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    echo "caffeine stopped"
+  else
+    echo "caffeine not running"
+  fi
+}
+
+[[ "$1" == "--stop" ]] && { stop_caffeine; exit 0; }
+
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "caffeine already running (PID $(cat "$PIDFILE"))"
+  exit 0
+fi
+
+# Background loop: send F15 keypress every 60s while Claude is running
+(
+  while true; do
+    if ! pgrep -x claude > /dev/null 2>&1; then
+      break
+    fi
+    powershell.exe -NonInteractive -NoProfile -Command \
+      'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("{F15}")' \
+      > /dev/null 2>&1
+    sleep 60
+  done
+) &
+
+echo $! > "$PIDFILE"
+echo "caffeine started (PID $!) — sleep prevented while Claude is running"
+echo "  Stop with: caffeine --stop"
