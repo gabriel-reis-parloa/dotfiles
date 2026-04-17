@@ -101,6 +101,8 @@ Note: `gws auth login` won't work in WSL (browser auth flow). Always use the gat
 
 **Token expiry:** check `expires_at` in the token file. If expired, the gateway will auto-refresh on next use — restart the gateway (`claude-status`) and re-read the token.
 
+**If Google Workspace tools stop working after an hour (gateway connects with 303 tools but tool calls return auth errors):** the gateway uses `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` env vars for token refresh and re-auth. In WSL, `op` can't resolve these from 1Password. The `patch-gateway-timeouts.sh` hook hardcodes these as a WSL fallback (credentials stored separately, not in the repo). If the GCP OAuth client is ever rotated, update the values directly in the live hook at `~/.claude/plugins/marketplaces/claudes-kitchen/plugins/gateway/hooks/gateway-session-start.sh`.
+
 ---
 
 ## Tools

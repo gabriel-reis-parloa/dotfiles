@@ -136,6 +136,7 @@ PYEOF
     echo "Patched session-start hook: $HOOK_FILE"
   fi
 done < <(find "$HOME/.claude/plugins/cache/claudes-kitchen/gateway" \
+  "$HOME/.claude/plugins/marketplaces/claudes-kitchen/plugins/gateway/hooks" \
   -name "gateway-session-start.sh" 2>/dev/null)
 
 # ── session-end patches ──────────────────────────────────────────────────────
@@ -166,4 +167,5 @@ PYEOF
     echo "Patched session-end hook: $HOOK_FILE"
   fi
 done < <(find "$HOME/.claude/plugins/cache/claudes-kitchen/gateway" \
+  "$HOME/.claude/plugins/marketplaces/claudes-kitchen/plugins/gateway/hooks" \
   -name "gateway-session-end.sh" 2>/dev/null)
