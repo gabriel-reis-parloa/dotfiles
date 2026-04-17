@@ -1,4 +1,5 @@
 # Never commit credentials or tokens
+home/.claude/hooks/.gateway-secrets
 home/.context/parloa/
 home/.context/personal/
 home/.context/active

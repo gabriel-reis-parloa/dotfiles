@@ -78,6 +78,29 @@ PYEOF
     CHANGED=true
   fi
 
+  # Patch: source ~/.claude/hooks/.gateway-secrets for Google Workspace OAuth credentials.
+  # op CLI does not work in WSL, so GOOGLE_CLIENT_ID/SECRET are never set from
+  # 1Password. The secrets file is gitignored and holds the credentials;
+  # the gateway uses these env vars for token refresh and re-auth flows.
+  if ! grep -q '\.gateway-secrets' "$HOOK_FILE" && grep -q 'GOOGLE_CLIENT_ID\|GONG_BASE_URL' "$HOOK_FILE"; then
+    python3 - "$HOOK_FILE" <<'PYEOF'
+import sys
+path = sys.argv[1]
+content = open(path).read()
+old = 'export GONG_BASE_URL="https://eu-2073.api.gong.io"'
+new = (
+    'export GONG_BASE_URL="https://eu-2073.api.gong.io"\n'
+    '\n'
+    '# WSL: source secrets file for Google Workspace OAuth credentials.\n'
+    '# Credentials live in ~/.claude/hooks/.gateway-secrets (gitignored).\n'
+    '[ -f "$HOME/.claude/hooks/.gateway-secrets" ] && source "$HOME/.claude/hooks/.gateway-secrets"'
+)
+if old in content:
+    open(path, 'w').write(content.replace(old, new, 1))
+PYEOF
+    CHANGED=true
+  fi
+
   # Patch: register the long-lived claude ancestor instead of $PPID.
   if ! grep -q 'claude.*ancestor\|_spid.*PPID' "$HOOK_FILE" && grep -q 'touch "$SESSIONS_DIR/$PPID"' "$HOOK_FILE"; then
     python3 - "$HOOK_FILE" <<'PYEOF'
